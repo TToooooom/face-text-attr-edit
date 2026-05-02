@@ -1,0 +1,44 @@
+project_name: face_text_attr_edit
+
+data:
+  celeba_root: data/celeba
+  image_dir: img_align_celeba
+  attr_file: list_attr_celeba.txt
+  partition_file: list_eval_partition.txt
+
+  image_size: 64
+  crop_size: 178
+
+  selected_attrs:
+    - Smiling
+    - Eyeglasses
+
+train:
+  batch_size: 8 #64
+  num_workers: 0 #4
+  seed: 42
+
+text:
+  max_len: 32
+  embed_dim: 128
+  num_heads: 4
+  num_layers: 2
+  ff_dim: 256
+  dropout: 0.1
+
+  train_ratio: 0.8
+
+stargan:
+  g_conv_dim: 64
+  d_conv_dim: 64
+  g_repeat_num: 6
+  d_repeat_num: 4
+
+  lambda_cls: 1.0
+  lambda_rec: 10.0
+  lambda_gp: 10.0
+
+  n_critic: 5
+  lr: 0.0001
+  beta1: 0.5
+  beta2: 0.999
