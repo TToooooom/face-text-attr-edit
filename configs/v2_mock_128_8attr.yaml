@@ -1,0 +1,46 @@
+project_name: face_text_attr_edit_v2
+
+data:
+  celeba_root: data/celeba
+  image_dir: img_align_celeba
+  attr_file: list_attr_celeba.txt
+  partition_file: list_eval_partition.txt
+
+  image_size: 128
+  crop_size: 178
+
+  selected_attrs:
+    - Smiling
+    - Eyeglasses
+    - Young
+    - Blond_Hair
+    - Black_Hair
+    - Brown_Hair
+    - Bangs
+    - Male
+
+train:
+  batch_size: 4
+  num_workers: 0
+  seed: 42
+
+v2_editor:
+  g_conv_dim: 64
+  d_conv_dim: 64
+  d_repeat_num: 5
+
+  lambda_adv: 1.0
+  lambda_attr: 1.0
+  lambda_keep: 5.0
+  lambda_rec: 10.0
+  lambda_mask: 10.0
+  lambda_alpha: 0.05
+  lambda_gp: 10.0
+  lambda_id: 0.0
+
+  n_critic: 5
+  lr: 0.0001
+  beta1: 0.5
+  beta2: 0.999
+
+  delta_scale: 1.0
