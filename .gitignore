@@ -9,14 +9,14 @@ venv/
 env/
 
 # data
-data/
+/data/
 
 # outputs
-outputs/
+/outputs/
 logs/
 
 # checkpoints
-checkpoints/
+/checkpoints/
 
 # system
 .DS_Store
