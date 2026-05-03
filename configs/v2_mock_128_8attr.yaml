@@ -38,6 +38,10 @@ v2_editor:
   lambda_gp: 10.0
   lambda_id: 0.0
 
+  lambda_self: 5.0
+  lambda_self_alpha: 0.05
+  lambda_tv: 0.1
+
   n_critic: 5
   lr: 0.0001
   beta1: 0.5

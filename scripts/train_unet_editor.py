@@ -173,6 +173,19 @@ def masked_bce_loss(logits, targets, mask):
     denom = mask.sum().clamp(min=1.0)
     return (loss_elem * mask).sum() / denom
 
+def tv_loss(x: torch.Tensor) -> torch.Tensor:
+    """
+    Total Variation loss for alpha mask.
+
+    作用：
+        让 alpha mask 在空间上更平滑，减少碎片化编辑区域。
+
+    x:
+        [B, 1, H, W] or [B, C, H, W]
+    """
+    loss_h = torch.mean(torch.abs(x[:, :, 1:, :] - x[:, :, :-1, :]))
+    loss_w = torch.mean(torch.abs(x[:, :, :, 1:] - x[:, :, :, :-1]))
+    return loss_h + loss_w
 
 @torch.no_grad()
 def save_samples(G, fixed_images, fixed_attrs, attr_names, image_size, epoch, step, output_dir, device):
@@ -382,6 +395,11 @@ def main():
             g_mask = torch.tensor(0.0, device=device)
             g_alpha = torch.tensor(0.0, device=device)
 
+            # 额外正则项
+            g_self = torch.tensor(0.0, device=device)
+            g_self_alpha = torch.tensor(0.0, device=device)
+            g_tv = torch.tensor(0.0, device=device)
+
             if global_step % editor_cfg["n_critic"] == 0:
                 x_fake, alpha, raw = G(x_real, c_trg, edit_mask, region_mask)
 
@@ -393,18 +411,52 @@ def main():
 
                 keep_mask = make_keep_mask(edit_mask)
 
+                # 目标属性：被编辑的属性要接近 c_trg
                 g_attr = masked_bce_loss(aux_logits, c_trg, edit_mask)
+
+                # 非目标属性：未编辑的属性要保持 c_org
                 g_keep = masked_bce_loss(aux_logits, c_org, keep_mask)
 
-                # cycle reconstruction
+                # cycle reconstruction:
+                # 编辑到目标属性后，再回到原属性，应重建原图
                 x_rec, alpha_rec, raw_rec = G(x_fake, c_org, edit_mask, region_mask)
                 g_rec = l1(x_rec, x_real)
 
-                # outside target region should remain unchanged
+                # 目标区域外保持不变
                 g_mask = torch.mean(torch.abs((1.0 - region_mask) * (x_fake - x_real)))
 
-                # discourage unnecessary large editing area
+                # alpha 越小越好，防止不必要的大范围编辑
                 g_alpha = alpha.mean()
+
+                # ------------------------------------------------------------
+                # 新增 1：self reconstruction
+                # 无编辑指令时，模型应输出原图。
+                #
+                # 注意：
+                # full_region_mask 必须是 1。
+                # 如果这里用全 0 region_mask，则 alpha 被强制为 0，
+                # x_self 恒等于 x_real，loss 永远为 0，没有训练意义。
+                # ------------------------------------------------------------
+                zero_edit_mask = torch.zeros_like(edit_mask)
+                full_region_mask = torch.ones_like(region_mask)
+
+                x_self, alpha_self, raw_self = G(
+                    x_real,
+                    c_org,
+                    zero_edit_mask,
+                    full_region_mask,
+                )
+
+                g_self = l1(x_self, x_real)
+
+                # 无编辑时，alpha 也应该尽量小
+                g_self_alpha = alpha_self.mean()
+
+                # ------------------------------------------------------------
+                # 新增 2：TV(alpha)
+                # 让编辑 mask 更平滑，减少碎片化编辑和边界伪影。
+                # ------------------------------------------------------------
+                g_tv = tv_loss(alpha)
 
                 g_loss = (
                     editor_cfg["lambda_adv"] * g_adv
@@ -413,7 +465,14 @@ def main():
                     + editor_cfg["lambda_rec"] * g_rec
                     + editor_cfg["lambda_mask"] * g_mask
                     + editor_cfg["lambda_alpha"] * g_alpha
+                    + editor_cfg.get("lambda_self", 0.0) * g_self
+                    + editor_cfg.get("lambda_self_alpha", 0.0) * g_self_alpha
+                    + editor_cfg.get("lambda_tv", 0.0) * g_tv
                 )
+
+                g_opt.zero_grad(set_to_none=True)
+                g_loss.backward()
+                g_opt.step()
 
                 g_opt.zero_grad(set_to_none=True)
                 g_loss.backward()
@@ -430,6 +489,8 @@ def main():
                     "rec": f"{g_rec.item():.3f}",
                     "mask": f"{g_mask.item():.3f}",
                     "alpha": f"{g_alpha.item():.3f}",
+                    "self": f"{g_self.item():.3f}",
+                    "tv": f"{g_tv.item():.3f}",
                 }
             )
 
