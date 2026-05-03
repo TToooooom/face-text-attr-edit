@@ -38,6 +38,9 @@ def set_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+def set_requires_grad(model, flag: bool):
+    for p in model.parameters():
+        p.requires_grad_(flag)
 
 def denormalize(x):
     return (x + 1.0) / 2.0
@@ -358,20 +361,27 @@ def main():
             c_trg, edit_mask = sample_edit_plan(c_org, attr_names)
             region_mask = build_attribute_edit_mask(attr_names, edit_mask, image_size)
 
-            # =========================
-            # Train D
-            # =========================
+            # ============================================================
+            # 1. Train Discriminator
+            # ============================================================
+            set_requires_grad(D, True)
+
             with torch.no_grad():
-                x_fake, alpha, raw = G(x_real, c_trg, edit_mask, region_mask)
+                x_fake_d, _, _ = G(
+                    x_real,
+                    c_trg.detach(),
+                    edit_mask.detach(),
+                    region_mask.detach(),
+                )
 
             out_src_real, out_cls_real = D(x_real)
-            out_src_fake, _ = D(x_fake.detach())
+            out_src_fake, _ = D(x_fake_d.detach())
 
             d_loss_real = -out_src_real.mean()
             d_loss_fake = out_src_fake.mean()
             d_loss_cls = bce(out_cls_real, c_org)
 
-            gp = gradient_penalty(D, x_real, x_fake.detach(), device)
+            gp = gradient_penalty(D, x_real, x_fake_d.detach(), device)
 
             d_loss = (
                 d_loss_real
@@ -401,61 +411,81 @@ def main():
             g_tv = torch.tensor(0.0, device=device)
 
             if global_step % editor_cfg["n_critic"] == 0:
-                x_fake, alpha, raw = G(x_real, c_trg, edit_mask, region_mask)
+                # G 更新时冻结 D 参数，但保留 D 对 x_fake_g 的输入梯度
+                set_requires_grad(D, False)
 
-                out_src_fake, _ = D(x_fake)
+                x_fake_g, alpha, raw = G(
+                    x_real,
+                    c_trg.detach(),
+                    edit_mask.detach(),
+                    region_mask.detach(),
+                )
 
+                out_src_fake, _ = D(x_fake_g)
                 g_adv = -out_src_fake.mean()
 
-                aux_logits = attr_model(x_fake)
+                # 属性分类器参数已冻结，但这里不能 torch.no_grad()
+                # 因为 g_attr/g_keep 需要把梯度传回 x_fake_g，再传回 G
+                aux_logits = attr_model(x_fake_g)
 
                 keep_mask = make_keep_mask(edit_mask)
 
                 # 目标属性：被编辑的属性要接近 c_trg
-                g_attr = masked_bce_loss(aux_logits, c_trg, edit_mask)
+                g_attr = masked_bce_loss(
+                    aux_logits,
+                    c_trg.detach(),
+                    edit_mask.detach(),
+                )
 
                 # 非目标属性：未编辑的属性要保持 c_org
-                g_keep = masked_bce_loss(aux_logits, c_org, keep_mask)
+                g_keep = masked_bce_loss(
+                    aux_logits,
+                    c_org.detach(),
+                    keep_mask.detach(),
+                )
 
-                # cycle reconstruction:
-                # 编辑到目标属性后，再回到原属性，应重建原图
-                x_rec, alpha_rec, raw_rec = G(x_fake, c_org, edit_mask, region_mask)
+                # ------------------------------------------------------------
+                # cycle reconstruction
+                # 使用 x_fake_g.detach()，避免同一个前向编辑计算图被第二次 G 调用复杂复用。
+                # 这样 g_rec 主要训练“从编辑图回到原属性”的逆向映射。
+                # ------------------------------------------------------------
+                x_rec, alpha_rec, raw_rec = G(
+                    x_fake_g.detach(),
+                    c_org.detach(),
+                    edit_mask.detach(),
+                    region_mask.detach(),
+                )
+
                 g_rec = l1(x_rec, x_real)
 
                 # 目标区域外保持不变
-                g_mask = torch.mean(torch.abs((1.0 - region_mask) * (x_fake - x_real)))
+                g_mask = torch.mean(
+                    torch.abs((1.0 - region_mask.detach()) * (x_fake_g - x_real))
+                )
 
                 # alpha 越小越好，防止不必要的大范围编辑
                 g_alpha = alpha.mean()
 
                 # ------------------------------------------------------------
-                # 新增 1：self reconstruction
+                # self reconstruction
                 # 无编辑指令时，模型应输出原图。
-                #
-                # 注意：
-                # full_region_mask 必须是 1。
-                # 如果这里用全 0 region_mask，则 alpha 被强制为 0，
-                # x_self 恒等于 x_real，loss 永远为 0，没有训练意义。
+                # full_region_mask 必须为 1，否则 alpha 会被 region_mask 强制为 0，
+                # x_self 恒等于 x_real，loss 没有训练意义。
                 # ------------------------------------------------------------
                 zero_edit_mask = torch.zeros_like(edit_mask)
                 full_region_mask = torch.ones_like(region_mask)
 
                 x_self, alpha_self, raw_self = G(
                     x_real,
-                    c_org,
+                    c_org.detach(),
                     zero_edit_mask,
                     full_region_mask,
                 )
 
                 g_self = l1(x_self, x_real)
-
-                # 无编辑时，alpha 也应该尽量小
                 g_self_alpha = alpha_self.mean()
 
-                # ------------------------------------------------------------
-                # 新增 2：TV(alpha)
-                # 让编辑 mask 更平滑，减少碎片化编辑和边界伪影。
-                # ------------------------------------------------------------
+                # TV(alpha)：让编辑区域更平滑，减少碎片化和边界伪影
                 g_tv = tv_loss(alpha)
 
                 g_loss = (
@@ -474,9 +504,8 @@ def main():
                 g_loss.backward()
                 g_opt.step()
 
-                g_opt.zero_grad(set_to_none=True)
-                g_loss.backward()
-                g_opt.step()
+                # 恢复 D 梯度，下一轮 D 更新需要
+                set_requires_grad(D, True)
 
             pbar.set_postfix(
                 {
