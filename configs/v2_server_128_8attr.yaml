@@ -20,7 +20,7 @@ data:
     - Male
 
 train:
-  batch_size: 16
+  batch_size: 32
   num_workers: 8
   seed: 42
 
@@ -30,20 +30,20 @@ v2_editor:
   d_repeat_num: 5
 
   lambda_adv: 1.0
-  lambda_attr: 1.0
-  lambda_keep: 5.0
+  lambda_attr: 2.0
+  lambda_keep: 3.0
   lambda_rec: 10.0
-  lambda_mask: 10.0
-  lambda_alpha: 0.05
+  lambda_mask: 5.0
+  lambda_alpha: 0.02
   lambda_gp: 10.0
   lambda_id: 0.0
   
-  lambda_self: 5.0
-  lambda_self_alpha: 0.05
+  lambda_self: 2.0
+  lambda_self_alpha: 0.02
   lambda_tv: 0.1
 
   n_critic: 5
-  lr: 0.0001
+  lr: 0.00005
   beta1: 0.5
   beta2: 0.999
 

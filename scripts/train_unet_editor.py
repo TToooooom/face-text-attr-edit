@@ -267,6 +267,7 @@ def main():
     parser.add_argument("--max_batches", type=int, default=None)
     parser.add_argument("--sample_interval", type=int, default=100)
     parser.add_argument("--save_interval", type=int, default=1)
+    parser.add_argument("--resume", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -322,6 +323,27 @@ def main():
         betas=(editor_cfg["beta1"], editor_cfg["beta2"]),
     )
 
+    start_epoch = 1
+    global_step = 0
+
+    if args.resume is not None:
+        print(f"Resuming from checkpoint: {args.resume}")
+        ckpt = safe_torch_load(args.resume, map_location=device)
+
+        G.load_state_dict(ckpt["G_state_dict"], strict=True)
+        D.load_state_dict(ckpt["D_state_dict"], strict=True)
+
+        if "g_optimizer_state_dict" in ckpt:
+            g_opt.load_state_dict(ckpt["g_optimizer_state_dict"])
+
+        if "d_optimizer_state_dict" in ckpt:
+            d_opt.load_state_dict(ckpt["d_optimizer_state_dict"])
+
+        start_epoch = int(ckpt.get("epoch", 0)) + 1
+        global_step = int(ckpt.get("step", 0))
+
+        print(f"Resume start_epoch = {start_epoch}, global_step = {global_step}")
+
     bce = nn.BCEWithLogitsLoss()
     l1 = nn.L1Loss()
 
@@ -343,9 +365,9 @@ def main():
     print(f"Num workers: {num_workers}")
     print("=" * 80)
 
-    global_step = 0
+    #global_step = 0
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         pbar = tqdm(loader, desc=f"Epoch {epoch}", ncols=140)
         start = time.time()
 
